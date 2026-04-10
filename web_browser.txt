@@ -1,0 +1,5 @@
+smolagents[transformers]
+#smolagents
+selenium
+helium
+pillow -q

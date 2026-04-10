@@ -78,13 +78,13 @@ def save_screenshot(memory_step: ActionStep, agent: CodeAgent) -> None:
 from smolagents import InferenceClientModel
 
 # Initialize the model
-model_id = "Qwen/Qwen3-0.6B"  # You can change this to your preferred VLM model
+model_id = "Qwen/Qwen3-VL-2B-Instruct"#"Qwen/Qwen3-0.6B"  # You can change this to your preferred VLM model
 # model = InferenceClientModel(model_id=model_id)
 model = TransformersModel(
     model_id=model_id,
     max_new_tokens=4096,
     device_map="auto",
-    #flatten_messages_as_text=False,
+#     flatten_messages_as_text=False
 )
 
 # Create the agent
@@ -95,6 +95,7 @@ agent = CodeAgent(
     step_callbacks=[save_screenshot],
     max_steps=20,
     verbosity_level=2,
+    stream_outputs=True,
 )
 
 # Import helium for the agent
@@ -151,6 +152,8 @@ search_request = """
 Please navigate to https://en.wikipedia.org/wiki/Chicago and give me a sentence containing the word "1992" that mentions a construction accident.
 """
 
-agent_output = agent.run(search_request + helium_instructions)
-print("Final output:")
-print(agent_output)
+agent_output = agent.run(search_request + helium_instructions)#, stream=True)
+# for step in agent_output:
+#     print(step)
+# print("Final output:")
+# print(agent_output)
