@@ -1,30 +1,441 @@
+# https://huggingface.co/blog/tugrulkaya/lightweight-rag-system
 # rag_qwen_example.py
 from typing import List
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer
+import re
+
+class QwenRag:
+    def __init__(
+            self, 
+            model_name="Qwen/Qwen3-Embedding-0.6B",#all-MiniLM-L6-v2
+            docs=None,
+        ):
+        self.docs = docs
+        self.model_name=model_name
+
+    def build_embeddings(self):
+        self.embed_model = SentenceTransformer(self.model_name)
+        self.doc_embeddings = self.embed_model.encode(self.docs, convert_to_numpy=True)
+
+    def create_faiss_index(self):
+        d = self.doc_embeddings.shape[1]
+        self.index = faiss.IndexFlatL2(d)
+        self.index.add(self.doc_embeddings)
+
+    def retrieve(self, query: str, k: int = 2) -> List[str]:
+        q_emb = self.embed_model.encode([query], convert_to_numpy=True)
+        distances, idxs = self.index.search(q_emb, k)
+        idxs = idxs[0]
+        return [self.docs[i] for i in idxs]
 
 class QwenChatbot:
-    def __init__(self, model_name="Qwen/Qwen3-0.6B"): #Qwen/Qwen3-1.7B
+    def __init__(
+            self, 
+            model_name="Qwen/Qwen3-0.6B", #Qwen/Qwen3-1.7B
+            use_rag=True, 
+            use_text_streamer=True,
+            use_history=True,
+            use_thinking=True,
+        ):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForCausalLM.from_pretrained(model_name)
         self.history = []
 
-        # Exemplo
         self.knowledge = [
 #             {"role": "system", "content": "Nossas horas de serviço são das 9h às 17h, de segunda a sexta."},
         ]
         self.system = [
             {"role": "system", "content": """
-            Você é uma IA de classificação de texto com base na semelhança, onde um texto é entregue para você, e você deve dizer qual é classificação com base nos conhecimentos da base de conhecimento
-            Você deve responder de forma simples e direta com a possivel classificação do texto
-            Caso o texto não exista na base de conhecimento você deve analisar qual é a classificação mais possivel
-            As possiveis classificação são SUSPENSO, MANDADO NEGATIVO, ARQUIVADO, EXTINÇÃO, TRANSITO EM JULGADO, CITAÇÃO, CONVERSÃO DA AÇÃO, EMBRAGOS DE DECLARAÇÃO, SENTENÇA PROCEDENTE, EMENDA INICIAL, LIMINAR DEFERIDA, EMBRAGOS DE DECLARAÇÃO
-            Caso o texto siga esta padrão: "10533983174 - Sentença" então você deve ignorar a semelhança nas palavras com as possiveis classificações e obrigatoriamente a classificação deve ser EXTINÇÃO e nada mais
-            A sua linguagem primaria é o Portugues Brasileiro.
-            Eu quero que você responda de forma curta e direta com no maximo 300 caracteres.
-            Eu quero que voce responda apenas o que esta em sua base de conhecimento, caso o texto não tenha possibilidade de classificação na base, então fale responde SEM CLASSIFICAÇÃO.
+Você é um especialista em análise de movimentações processuais no direito brasileiro.
+
+Classifique cada movimentação em apenas uma destas categorias:
+
+- MANDADO EXPEDIDO
+- MANDADO NEGATIVO
+- LIMINAR DEFERIDA
+- LIMINAR INDEFERIDA
+- SEM CLASSIFICACAO
+
+--------------------------------------------------
+OBJETIVO
+--------------------------------------------------
+
+Identificar, com rigor, se o texto descreve diretamente e no presente um dos seguintes eventos principais:
+
+1. emissão, expedição, encaminhamento, distribuição, recebimento para cumprimento ou disponibilização de mandado;
+2. resultado negativo de cumprimento de mandado, diligência, citação, intimação, localização, penhora ou apreensão;
+3. concessão efetiva de liminar, tutela de urgência, tutela antecipada ou tutela provisória;
+4. indeferimento, negativa ou não concessão de liminar, tutela de urgência, tutela antecipada ou tutela provisória.
+
+Se não houver segurança:
+→ SEM CLASSIFICACAO
+
+--------------------------------------------------
+REGRA CENTRAL
+--------------------------------------------------
+
+Classifique apenas o EVENTO PRINCIPAL ATUAL da movimentação.
+
+Não classifique apenas com base em:
+- menção histórica;
+- referência a evento anterior;
+- publicação;
+- intimação;
+- juntada;
+- certidão sem conteúdo conclusivo;
+- prazo decorrido;
+- manifestação;
+- reflexo documental;
+- similaridade superficial com exemplos da base.
+
+Palavras isoladas como “mandado”, “liminar”, “tutela”, “certidão”, “ato ordinatório” ou similares não bastam por si só.
+
+Movimentações reflexas, indiretas ou acessórias só podem receber classificação específica quando a base de conhecimento indicar correspondência semântica estável, recorrente, predominante e confiável com uma única classe válida.
+
+--------------------------------------------------
+PRIORIDADE GLOBAL
+--------------------------------------------------
+
+Se o mesmo texto contiver sinais claros de mais de uma classe, use esta hierarquia:
+
+1º MANDADO NEGATIVO
+2º LIMINAR INDEFERIDA
+3º LIMINAR DEFERIDA
+4º MANDADO EXPEDIDO
+5º SEM CLASSIFICACAO
+
+--------------------------------------------------
+SEQUÊNCIA OBRIGATÓRIA DE LEITURA
+--------------------------------------------------
+
+Antes de classificar, siga mentalmente esta ordem:
+
+1. Verifique se o texto descreve o fato principal atual ou apenas evento passado, reflexo documental ou ato acessório.
+2. Procure primeiro sinais de insucesso no cumprimento.
+3. Depois sinais de indeferimento de liminar/tutela.
+4. Depois sinais de concessão de liminar/tutela.
+5. Depois sinais de expedição/emissão/encaminhamento/disponibilização de mandado.
+6. Se houver dúvida, ambiguidade ou insuficiência de contexto:
+→ SEM CLASSIFICACAO
+
+--------------------------------------------------
+REGRAS DE CLASSIFICACAO
+--------------------------------------------------
+
+[1] MANDADO NEGATIVO
+
+Classifique como MANDADO NEGATIVO quando houver, de forma direta e atual, insucesso no cumprimento de mandado, diligência, citação, intimação, localização, penhora, apreensão ou ato equivalente.
+
+Indicadores fortes:
+- não cumprido
+- ato negativo
+- diligência negativa
+- não localizado / não localizada
+- não encontrado / não encontrada
+- frustrada a diligência
+- deixei de apreender
+- não foi possível cumprir
+- mandado devolvido negativamente
+- mandado devolvido não entregue
+- sem êxito
+- resultado negativo
+- negativo o cumprimento
+- certifico que não localizei
+- certifico que não encontrei
+- bem não localizado
+- restou infrutífera a diligência
+- diligência infrutífera
+- não logrando êxito
+- não obtive êxito
+- devolvido negativo
+- mandado negativo
+- certidão negativa de cumprimento
+- mandado cumprido negativo
+- mandado sem cumprimento
+- devolvido sem cumprimento
+- apreensão negativa
+- mandado devolvido entregue ao destinatário
+- mandado devolvido ratificada a liminar
+
+Regra obrigatória:
+Se houver indicação clara de insucesso no cumprimento, esta classe prevalece sobre qualquer outra.
+
+Não classifique automaticamente como MANDADO NEGATIVO quando houver apenas:
+- juntada de mandado;
+- devolução de mandado sem conteúdo conclusivo;
+- petição sobre devolução de mandado;
+- manifestação sobre certidão negativa;
+- referência a mandado negativo anterior;
+- menção genérica a certidão negativa sem indicar o fato principal atual;
+- mandado mencionado sem descrever o resultado do cumprimento.
+
+Se for apenas documento, juntada, publicação, manifestação ou referência a evento anterior, sem insucesso atual claro:
+→ SEM CLASSIFICACAO
+
+----------------------------------------
+
+[2] LIMINAR INDEFERIDA
+
+Classifique como LIMINAR INDEFERIDA quando a movimentação atual trouxer, de forma direta e clara, indeferimento, negativa, rejeição ou não concessão de liminar, tutela de urgência, tutela antecipada ou tutela provisória.
+
+Indicadores fortes:
+- indefiro a liminar
+- liminar indeferida
+- indefiro o pedido liminar
+- nego a liminar
+- não concedo a liminar
+- não concedo a tutela de urgência
+- tutela indeferida
+- ausentes os requisitos, indefiro
+- deixo de conceder a liminar
+- indefiro a tutela antecipada
+- indefiro o pedido de tutela de urgência
+- indefiro a tutela
+- rejeito o pedido liminar
+- rejeito a tutela de urgência
+- não há elementos para concessão da liminar
+- ausentes os requisitos para concessão da tutela
+- incabível a concessão da liminar
+
+Só use esta classe quando houver núcleo decisório negativo claro na movimentação atual.
+
+Não classifique como LIMINAR INDEFERIDA em casos de:
+- pedido de liminar;
+- requerimento de tutela;
+- análise de liminar;
+- conclusão para decisão;
+- publicação, intimação ou prazo decorrido referentes à liminar;
+- cumprimento ou execução de liminar;
+- menção histórica a liminar indeferida;
+- referência a decisão anterior que indeferiu a liminar;
+- simples menção à ausência de requisitos sem decisão negativa clara.
+
+Se o texto apenas discutir, analisar, historicizar ou refletir documentalmente indeferimento anterior:
+→ SEM CLASSIFICACAO
+
+----------------------------------------
+
+[3] LIMINAR DEFERIDA
+
+Classifique como LIMINAR DEFERIDA somente quando a movimentação atual trouxer concessão efetiva e atual de liminar, tutela de urgência, tutela antecipada, tutela provisória ou providência urgente equivalente.
+
+Indicadores fortes:
+- defiro a liminar
+- liminar deferida
+- defiro o pedido liminar
+- concedo a liminar
+- defiro liminarmente
+- tutela de urgência deferida
+- tutela antecipada deferida
+- concedo a tutela
+- defiro a tutela
+- concedida a medida liminar
+- concedida a antecipação de tutela
+- concedida a tutela provisória
+- defiro o pedido de tutela de urgência
+- presentes os requisitos, defiro
+- concedo a antecipação da tutela
+
+Só use esta classe quando houver núcleo decisório concessivo claro na movimentação atual.
+
+Não classifique como LIMINAR DEFERIDA em casos de:
+- pedido de liminar;
+- requerimento de tutela;
+- análise de liminar;
+- conclusão para decisão;
+- publicação, intimação ou prazo decorrido referentes à liminar;
+- mandado expedido referente a liminar já concedida;
+- cumprimento ou execução de liminar;
+- menção histórica a liminar deferida;
+- referência a decisão liminar anterior.
+
+Se houver termos de indeferimento, negativa ou não concessão:
+→ LIMINAR INDEFERIDA
+
+Se o texto apenas mencionar discussão, histórico ou reflexo documental de concessão anterior:
+→ SEM CLASSIFICACAO
+
+----------------------------------------
+
+[4] MANDADO EXPEDIDO
+
+Classifique como MANDADO EXPEDIDO quando o texto indicar, de forma direta e atual, emissão, expedição, encaminhamento, distribuição, recebimento para cumprimento ou disponibilização de mandado para cumprimento.
+
+Indicadores fortes:
+- mandado expedido
+- expedição de mandado
+- expeça-se mandado
+- expeça-se folha de rosto
+- servirá como mandado
+- aguardando cumprimento
+- recebido o mandado para cumprimento
+- central de mandados
+- encaminhado à central de mandados
+- remessa à central de mandados
+- mandado encaminhado para cumprimento
+- mandado emitido
+- situação: aguardando cumprimento
+- situação: distribuído
+- situação: emitido
+- recebido o mandado para cumprimento pelo oficial de justiça
+- mandado expedido e encaminhado à central
+- distribuído à central de mandados
+
+Não classifique automaticamente como MANDADO EXPEDIDO quando houver apenas:
+- juntada de mandado;
+- devolução de mandado;
+- referência a mandado expedido anterior;
+- publicação relacionada a mandado;
+- menção genérica à central de mandados sem indicação de expedição atual;
+- menção a cumprimento de mandado já expedido;
+- folha de rosto sem contexto suficiente;
+- simples menção a mandado sem verbo ou contexto de expedição atual.
+
+Se houver resultado negativo no mesmo texto:
+→ MANDADO NEGATIVO
+
+Se o texto apenas mencionar “mandado” sem descrever expedição, emissão, encaminhamento ou disponibilização atual:
+→ SEM CLASSIFICACAO
+
+--------------------------------------------------
+REGRAS DE DESAMBIGUACAO
+--------------------------------------------------
+
+Expressões como:
+- juntada de mandado
+- devolução de mandado
+- juntada de certidão
+- juntada de expediente
+- publicação
+- intimação
+- ato ordinatório
+- prazo decorrido
+- manifestação
+- referente ao evento
+- em razão do evento
+- sobre a certidão
+- sobre o mandado
+
+não geram classificação automática por si sós.
+
+Nesses casos:
+- se houver descrição clara de resultado negativo atual → MANDADO NEGATIVO
+- se houver descrição clara de indeferimento atual de liminar/tutela → LIMINAR INDEFERIDA
+- se houver descrição clara de concessão atual de liminar/tutela → LIMINAR DEFERIDA
+- se houver descrição clara de expedição atual → MANDADO EXPEDIDO
+- se apenas referenciar, mencionar ou refletir evento anterior → SEM CLASSIFICACAO
+
+--------------------------------------------------
+CONTENCAO DE FALSO POSITIVO
+--------------------------------------------------
+
+Não classifique com base em palavras isoladas.
+
+As expressões abaixo, sozinhas, não bastam:
+- mandado
+- liminar
+- tutela
+- certidão
+- juntada
+- despacho
+- decisão
+- oficial de justiça
+- publicação
+- conclusão
+- petição
+- manifestação
+- folha de rosto
+- ato ordinatório
+
+A classificação só pode ocorrer quando o texto indicar o evento principal atual com clareza suficiente ou quando a base autorizar isso de modo consolidado, nos termos abaixo.
+
+--------------------------------------------------
+USO DA BASE DE CONHECIMENTO
+--------------------------------------------------
+
+A base de conhecimento contém exemplos e padrões já conhecidos de movimentações processuais.
+
+Siga obrigatoriamente esta ordem:
+
+1. Primeiro aplique as regras textuais explícitas deste prompt.
+2. Se elas não forem suficientes, consulte a base de conhecimento.
+3. Só use a base quando houver semelhança semântica clara quanto ao EVENTO PRINCIPAL ATUAL da movimentação.
+4. Nunca classifique por mera coincidência de palavras.
+5. Nunca classifique apenas porque o texto atual menciona ou referencia um exemplo conhecido da base.
+6. Se o texto atual for reflexo documental, histórico ou acessório, a base só autoriza classificação específica quando houver correspondência semântica estável, recorrente, predominante e confiável entre aquele padrão e uma classe já consolidada.
+
+A semelhança com a base deve envolver o mesmo núcleo do evento, como:
+- expedição atual de mandado;
+- cumprimento negativo atual de mandado ou diligência;
+- concessão atual de liminar ou tutela;
+- indeferimento atual de liminar ou tutela.
+
+A base não deve ser usada para forçar classificação em casos de:
+- juntada;
+- devolução sem contexto conclusivo;
+- publicação;
+- intimação;
+- prazo decorrido;
+- manifestação;
+- referência a evento anterior;
+- texto que apenas cite liminar, mandado ou tutela sem descrever o fato principal atual,
+
+salvo quando o histórico rotulado demonstrar que aquele padrão específico possui correspondência semântica estável, recorrente, predominante e confiável com uma única classe válida.
+
+Se a base trouxer exemplos parecidos, mas o texto atual não descrever com clareza o evento principal nem corresponder a padrão semântico estável da base:
+→ SEM CLASSIFICACAO
+
+--------------------------------------------------
+PREVALENCIA DA BASE EM PADROES CONSOLIDADOS
+--------------------------------------------------
+
+Quando o texto não contiver núcleo literal suficientemente claro para classificação direta pelas regras textuais, mas corresponder a um padrão documental, reflexo, acessório ou padronizado que, na base de conhecimento, esteja associado de forma estável, recorrente, predominante e confiável a uma única classe, classifique conforme a base.
+
+Nesses casos, a ausência de palavras conclusivas no texto não impede a classificação, desde que a correspondência semântica com o padrão consolidado da base seja forte e recorrente.
+
+A base pode prevalecer sobre a neutralidade textual quando:
+- a leitura textual isolada não for suficiente para classificar com segurança;
+- o padrão da movimentação for reconhecível e semanticamente equivalente a casos já consolidados;
+- houver predominância clara de uma única classe na base para aquele padrão.
+
+Se a regra textual não apontar de forma clara uma classe específica e a base indicar associação predominante e consistente com uma única classe, prevalece a base.
+
+A regra textual só deve prevalecer contra a base quando o próprio texto trouxer sinal claro em sentido contrário.
+
+Considere a correspondência da base como predominante apenas quando houver associação clara, consistente e sem conflito relevante entre classes.
+Se houver dúvida sobre a força do padrão, dispersão relevante entre classes, baixa estabilidade histórica ou ambiguidade material:
+→ SEM CLASSIFICACAO
+
+--------------------------------------------------
+REGRA FINAL
+--------------------------------------------------
+
+Se não for possível associar com segurança o texto a uma das cinco classes válidas:
+→ SEM CLASSIFICACAO
+
+--------------------------------------------------
+FORMATO DE SAIDA
+--------------------------------------------------
+
+Retorne apenas no formato abaixo:
+
+CLASSIFICACAO
+
+--------------------------------------------------
+RESTRICOES
+--------------------------------------------------
+
+- Não explicar
+- Não justificar
+- Não comentar
+- Não resumir
+- Não alterar a ordem das linhas
+- Não corrigir o texto original
+- Não inventar contexto
+- Não usar nenhuma classe fora das cinco permitidas
             """}
         ]
         for entry in self.knowledge:
@@ -53,13 +464,13 @@ class QwenChatbot:
 
         return response
 
-def extract_text_pages(pdf_path):
-    import pdfplumber
-    texts = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            texts.append(page.extract_text() or "")
-    return texts
+# def extract_text_pages(pdf_path):
+#     import pdfplumber
+#     texts = []
+#     with pdfplumber.open(pdf_path) as pdf:
+#         for page in pdf.pages:
+#             texts.append(page.extract_text() or "")
+#     return texts
 
 # pdf_path = "0800029-30.2025.8.12.0002.pdf"
 # pages_text = extract_text_pages(pdf_path)
@@ -85,33 +496,33 @@ docs = [
         "TEXTO: Mandado Expedido Para Goiânia - Central de Mandados (Mandado nº 6585100 / Para: Ruan Carlos Dias Rocha Gomes)		->CLASSIFICAÇÃO: MANDADO EXPEDIDO\n"
         "TEXTO: 192320710 - Pedido (Outros) (DEVOLUÇÃO MANDADO)		->CLASSIFICAÇÃO: MANDADO NEGATIVO\n"
         "TEXTO: 260143591 - Embargos de Declaração (Embargos de Declaração com Pedido de Efeitos Infringentes e Tutela de Urgência) 260143592 - Embargos de Declaração (Embargos de Declaração com Pedido de Efeitos Infringentes e Tutela de Urgência)		->CLASSIFICAÇÃO: EMBRAGOS DE DECLARAÇÃO\n"
-
+        "TEXTO: 106 - MANDADO DEVOLVIDO NÃO ENTREGUE AO DESTINATÁRIO		->CLASSIFICAÇÃO: MANDADO NEGATIVO\n"
+        "TEXTO: 1051 - DECORRIDO PRAZO DE ADELSON DIAS DA SILVEIRA EM 15/12/2025 23:59.		->CLASSIFICAÇÃO: SEM CLASSIFICAÇÃO\n"
+        "TEXTO: 1051 - 10591226738 - Demonstrativo de Custas		->CLASSIFICAÇÃO: SEM CLASSIFICAÇÃO\n"
+        "TEXTO: 10591979679 - Juntada (Rastreamento Correio)		->CLASSIFICAÇÃO: SEM CLASSIFICAÇÃO\n"
+        "TEXTO: 10592908862 - Juntada (DESCARTE)		->CLASSIFICAÇÃO: SEM CLASSIFICAÇÃO\n"
 ]
 
-# 2) Build embeddings for the docs (use a small SBERT model)
-embed_model = SentenceTransformer("Qwen/Qwen3-Embedding-0.6B")#"all-MiniLM-L6-v2")
-doc_embeddings = embed_model.encode(docs, convert_to_numpy=True)
-
-# 3) Create a FAISS index
-d = doc_embeddings.shape[1]
-index = faiss.IndexFlatL2(d)
-index.add(doc_embeddings)  # add vectors
-
-# helper to retrieve top-k docs
-# rag generation: retrieve, build prompt, and generate
-def retrieve(query: str, k: int = 2) -> List[str]:
-    q_emb = embed_model.encode([query], convert_to_numpy=True)
-    distances, idxs = index.search(q_emb, k)
-    idxs = idxs[0]
-    return [docs[i] for i in idxs]
+import pandas as pd
+df = pd.read_excel('data.xlsx')
+df['text_for_embedding'] = "<texto>" + df['Movimentações'].astype(str) + "</texto> é classificado como <classificação>" + df['CLASSIFICAÇÃO'].astype(str) + "</classificação>"
 
 if __name__ == "__main__":
     chatbot = QwenChatbot()
+#     chatbot.rag = QwenRag(docs=docs)
+    chatbot.rag = QwenRag(docs=df['text_for_embedding'].head(100).to_list())
+    chatbot.rag.build_embeddings()
+    chatbot.rag.create_faiss_index()
     while True:
         prompt = input("Enter your prompt (or 'quit' to exit): ")
-        retrieved = retrieve(prompt)
-        for i, r in enumerate(retrieved):
-            chatbot.history.append({"role": "system", "content": r})
+        retrieved = chatbot.rag.retrieve(prompt)
+        print("RAG:: ", retrieved, "\n---")
+        for r in retrieved:
+            m = re.search(r"<classificação>(.*?)</classificação>", r, re.IGNORECASE | re.DOTALL)
+            if m:
+                print(m.group(1))
+#         for i, r in enumerate(retrieved):
+#             chatbot.history.append({"role": "system", "content": "<contexto>"+r+"</contexto>"})
         if prompt.lower() == 'quit':
             break
-        response = chatbot.generate_response(prompt)
+#         response = chatbot.generate_response(prompt)
