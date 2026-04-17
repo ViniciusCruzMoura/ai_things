@@ -6,18 +6,29 @@ import faiss
 from sentence_transformers import SentenceTransformer
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer
 import re
+import sqlite3
 
 class QwenRag:
     def __init__(
             self, 
             model_name="Qwen/Qwen3-Embedding-0.6B",#all-MiniLM-L6-v2
             docs=None,
+            db_path='embeddings.db',
         ):
         self.docs = docs
-        self.model_name=model_name
+        self.model_name = model_name
+        self.db_path = db_path
+        self.embed_model = SentenceTransformer(self.model_name)
+        self.doc_embeddings = None
+        self.index = None
+        self.load_embeddings()
+        if not self.index:
+            self.build_embeddings()
+            self.create_faiss_index()
+            self.save_embeddings()
 
     def build_embeddings(self):
-        self.embed_model = SentenceTransformer(self.model_name)
+#         self.embed_model = SentenceTransformer(self.model_name)
         self.doc_embeddings = self.embed_model.encode(self.docs, convert_to_numpy=True)
 
     def create_faiss_index(self):
@@ -30,6 +41,26 @@ class QwenRag:
         distances, idxs = self.index.search(q_emb, k)
         idxs = idxs[0]
         return [self.docs[i] for i in idxs]
+
+    def save_embeddings(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('CREATE TABLE IF NOT EXISTS embeddings (id INTEGER PRIMARY KEY, document TEXT, embedding BLOB)')
+            for doc, emb in zip(self.docs, self.doc_embeddings):
+                cursor.execute('INSERT INTO embeddings (document, embedding) VALUES (?, ?)',
+                               (doc, emb.tobytes()))
+            conn.commit()
+
+    def load_embeddings(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('CREATE TABLE IF NOT EXISTS embeddings (id INTEGER PRIMARY KEY, document TEXT, embedding BLOB)')
+            cursor.execute('SELECT document, embedding FROM embeddings')
+            rows = cursor.fetchall()
+            if rows:
+                self.docs = [row[0] for row in rows]
+                self.doc_embeddings = np.array([np.frombuffer(row[1], dtype=np.float32) for row in rows])
+                self.create_faiss_index()
 
 class QwenChatbot:
     def __init__(
@@ -476,53 +507,61 @@ RESTRICOES
 # pages_text = extract_text_pages(pdf_path)
 # docs = pages_text
 docs = [
-        "TEXTO: Arquivado Provisoriamente		->CLASSIFICAÇÃO:SUSPENSO\n"
-        "TEXTO: Mandado devolvido - não entregue ao destinatário - Refer. ao Evento: 74		->CLASSIFICAÇÃO:MANDADO NEGATIVO\n"
-        "TEXTO: Mandado devolvido - não entregue ao destinatário - Refer. ao Evento: 57		->CLASSIFICAÇÃO:MANDADO NEGATIVO\n"
-        "TEXTO: ARQUIVADO DEFINITIVAMENTE	->CLASSIFICAÇÃO:ARQUIVADO\n"
-        "TEXTO: Certidão de Trânsito em Julgado		->CLASSIFICAÇÃO:TRANSITO EM JULGADO\n"
-        "TEXTO: MANDADO DEVOLVIDO NÃO ENTREGUE AO DESTINATÁRIO		->CLASSIFICAÇÃO:MANDADO NEGATIVO\n"
-        "TEXTO: EJUNTADA DE MANDADO		->CLASSIFICAÇÃO:MANDADO NEGATIVO\n"
-        "TEXTO: EXTINTO OS AUTOS EM RAZÃO DE PERDA DE OBJETO		->CLASSIFICAÇÃO:EXTINÇÃO\n"
-        "TEXTO: EXTINTO OS AUTOS EM RAZÃO DE PERDA DE OBJETO		->CLASSIFICAÇÃO: EXTINÇÃO\n"
-        "TEXTO: 128263342 - Sentença		->CLASSIFICAÇÃO: EXTINÇÃO\n"
-        "TEXTO: 128160049 - Sentença		->CLASSIFICAÇÃO: EXTINÇÃO\n"
-        "TEXTO: 125068794 - Sentença		->CLASSIFICAÇÃO: EXTINÇÃO\n"
-        "TEXTO: 10598329748 - Intimação (Sentença)		->CLASSIFICAÇÃO: EXTINÇÃO\n"
-        "TEXTO: 10600788840 - Intimação (Sentença)		->CLASSIFICAÇÃO: EXTINÇÃO\n"
-        "TEXTO: Intimação Efetivada Disponibilizada no primeiro e publicada no segundo dia útil (Lei 11.419/2006, art. 4º, §§ 3º e 4º) - Adv(s). de Banco Bradesco S/a (Referente à Mov. Mandado Não Cumprido (27/01/2026 18:46:01))		->CLASSIFICAÇÃO: MANDADO NEGATIVO\n"
-        "TEXTO: Intimação Expedida Aguardando processamento de envio para o DJEN - Adv(s). de Banco Bradesco S/a (Referente à Mov. Mandado Não Cumprido - 27/01/2026 18:46:01)		->CLASSIFICAÇÃO: MANDADO NEGATIVO\n"
-        "TEXTO: Mandado Não Cumprido Para Ruan Carlos Dias Rocha Gomes (Mandado nº 6585100 / Referente à Mov. Juntada -> Petição (19/01/2026 08:49:35))		->CLASSIFICAÇÃO: MANDADO NEGATIVO\n"
-        "TEXTO: Mandado Expedido Para Goiânia - Central de Mandados (Mandado nº 6585100 / Para: Ruan Carlos Dias Rocha Gomes)		->CLASSIFICAÇÃO: MANDADO EXPEDIDO\n"
-        "TEXTO: 192320710 - Pedido (Outros) (DEVOLUÇÃO MANDADO)		->CLASSIFICAÇÃO: MANDADO NEGATIVO\n"
-        "TEXTO: 260143591 - Embargos de Declaração (Embargos de Declaração com Pedido de Efeitos Infringentes e Tutela de Urgência) 260143592 - Embargos de Declaração (Embargos de Declaração com Pedido de Efeitos Infringentes e Tutela de Urgência)		->CLASSIFICAÇÃO: EMBRAGOS DE DECLARAÇÃO\n"
-        "TEXTO: 106 - MANDADO DEVOLVIDO NÃO ENTREGUE AO DESTINATÁRIO		->CLASSIFICAÇÃO: MANDADO NEGATIVO\n"
-        "TEXTO: 1051 - DECORRIDO PRAZO DE ADELSON DIAS DA SILVEIRA EM 15/12/2025 23:59.		->CLASSIFICAÇÃO: SEM CLASSIFICAÇÃO\n"
-        "TEXTO: 1051 - 10591226738 - Demonstrativo de Custas		->CLASSIFICAÇÃO: SEM CLASSIFICAÇÃO\n"
-        "TEXTO: 10591979679 - Juntada (Rastreamento Correio)		->CLASSIFICAÇÃO: SEM CLASSIFICAÇÃO\n"
-        "TEXTO: 10592908862 - Juntada (DESCARTE)		->CLASSIFICAÇÃO: SEM CLASSIFICAÇÃO\n"
+    "<texto>Arquivado Provisoriamente		</texto><classificação>SUSPENSO</classificação>\n",
+    "<texto>Mandado devolvido - não entregue ao destinatário - Refer. ao Evento: 74		</texto><classificação>MANDADO NEGATIVO</classificação>\n",
+    "<texto>Mandado devolvido - não entregue ao destinatário - Refer. ao Evento: 57		</texto><classificação>MANDADO NEGATIVO</classificação>\n",
+    "<texto>ARQUIVADO DEFINITIVAMENTE	</texto><classificação>ARQUIVADO</classificação>\n",
+    "<texto>Certidão de Trânsito em Julgado		</texto><classificação>TRANSITO EM JULGADO</classificação>\n",
+    "<texto>MANDADO DEVOLVIDO NÃO ENTREGUE AO DESTINATÁRIO		</texto><classificação>MANDADO NEGATIVO</classificação>\n",
+    "<texto>EJUNTADA DE MANDADO		</texto><classificação>MANDADO NEGATIVO</classificação>\n",
+    "<texto>EXTINTO OS AUTOS EM RAZÃO DE PERDA DE OBJETO		</texto><classificação>EXTINÇÃO</classificação>\n",
+    "<texto>EXTINTO OS AUTOS EM RAZÃO DE PERDA DE OBJETO		</texto><classificação> EXTINÇÃO</classificação>\n",
+    "<texto>128263342 - Sentença		</texto><classificação> EXTINÇÃO</classificação>\n",
+    "<texto>128160049 - Sentença		</texto><classificação> EXTINÇÃO</classificação>\n",
+    "<texto>125068794 - Sentença		</texto><classificação> EXTINÇÃO</classificação>\n",
+    "<texto>10598329748 - Intimação (Sentença)		</texto><classificação> EXTINÇÃO</classificação>\n",
+    "<texto>10600788840 - Intimação (Sentença)		</texto><classificação> EXTINÇÃO</classificação>\n",
+    "<texto>Intimação Efetivada Disponibilizada no primeiro e publicada no segundo dia útil (Lei 11.419/2006, art. 4º, §§ 3º e 4º) - Adv(s). de Banco Bradesco S/a (Referente à Mov. Mandado Não Cumprido (27/01/2026 18:46:01))		</texto><classificação> MANDADO NEGATIVO</classificação>\n",
+    "<texto>Intimação Expedida Aguardando processamento de envio para o DJEN - Adv(s). de Banco Bradesco S/a (Referente à Mov. Mandado Não Cumprido - 27/01/2026 18:46:01)		</texto><classificação> MANDADO NEGATIVO</classificação>\n",
+    "<texto>Mandado Não Cumprido Para Ruan Carlos Dias Rocha Gomes (Mandado nº 6585100 / Referente à Mov. Juntada </texto> Petição (19/01/2026 08:49:35))		-><classificação> MANDADO NEGATIVO</classificação>\n",
+    "<texto>Mandado Expedido Para Goiânia - Central de Mandados (Mandado nº 6585100 / Para: Ruan Carlos Dias Rocha Gomes)		</texto><classificação> MANDADO EXPEDIDO</classificação>\n",
+    "<texto>192320710 - Pedido (Outros) (DEVOLUÇÃO MANDADO)		</texto><classificação> MANDADO NEGATIVO</classificação>\n",
+    "<texto>260143591 - Embargos de Declaração (Embargos de Declaração com Pedido de Efeitos Infringentes e Tutela de Urgência) 260143592 - Embargos de Declaração (Embargos de Declaração com Pedido de Efeitos Infringentes e Tutela de Urgência)		</texto><classificação> EMBRAGOS DE DECLARAÇÃO</classificação>\n",
+    "<texto>106 - MANDADO DEVOLVIDO NÃO ENTREGUE AO DESTINATÁRIO		</texto><classificação> MANDADO NEGATIVO</classificação>\n",
+    "<texto>1051 - DECORRIDO PRAZO DE ADELSON DIAS DA SILVEIRA EM 15/12/2025 23:59.		</texto><classificação> SEM CLASSIFICAÇÃO</classificação>\n",
+    "<texto>1051 - 10591226738 - Demonstrativo de Custas		</texto><classificação> SEM CLASSIFICAÇÃO</classificação>\n",
+    "<texto>10591979679 - Juntada (Rastreamento Correio)		</texto><classificação> SEM CLASSIFICAÇÃO</classificação>\n",
+    "<texto>10592908862 - Juntada (DESCARTE)		</texto><classificação> SEM CLASSIFICAÇÃO</classificação>\n",
 ]
 
-import pandas as pd
-df = pd.read_excel('data.xlsx')
-df['text_for_embedding'] = "<texto>" + df['Movimentações'].astype(str) + "</texto> é classificado como <classificação>" + df['CLASSIFICAÇÃO'].astype(str) + "</classificação>"
+# import pandas as pd
+# df = pd.read_excel('data.xlsx')
+# df['text_for_embedding'] = "<texto>" + df['Movimentações'].astype(str) + "</texto> é classificado como <classificação>" + df['CLASSIFICAÇÃO'].astype(str) + "</classificação>"
 
 if __name__ == "__main__":
-    chatbot = QwenChatbot()
-#     chatbot.rag = QwenRag(docs=docs)
-    chatbot.rag = QwenRag(docs=df['text_for_embedding'].head(100).to_list())
-    chatbot.rag.build_embeddings()
-    chatbot.rag.create_faiss_index()
+    from types import SimpleNamespace
+    chatbot = SimpleNamespace(rag=None)
+#     chatbot = QwenChatbot()
+#     chatbot.rag = QwenRag(docs=df['text_for_embedding'].head(100).to_list())
+    chatbot.rag = QwenRag(docs=docs)
     while True:
         prompt = input("Enter your prompt (or 'quit' to exit): ")
+        if prompt.lower() == 'quit':
+            break
         retrieved = chatbot.rag.retrieve(prompt)
+        # verificar se cada recuperacao tem uma classificacao diferente
+        # e verificar se o prompt é menos de 50% semelhante a recuperacao
+        # se for entao usar o llm de raciocionio
         print("RAG:: ", retrieved, "\n---")
+        pclass = []
         for r in retrieved:
             m = re.search(r"<classificação>(.*?)</classificação>", r, re.IGNORECASE | re.DOTALL)
             if m:
-                print(m.group(1))
+                pclass.append(m.group(1))
+        if pclass[0] != pclass[1]:
+            print("Thinking...")
+        else:
+            print(pclass[0])
 #         for i, r in enumerate(retrieved):
 #             chatbot.history.append({"role": "system", "content": "<contexto>"+r+"</contexto>"})
-        if prompt.lower() == 'quit':
-            break
 #         response = chatbot.generate_response(prompt)
