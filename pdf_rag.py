@@ -21,11 +21,17 @@ class QwenRag:
         self.embed_model = SentenceTransformer(self.model_name)
         self.doc_embeddings = None
         self.index = None
-        self.load_embeddings()
+#         self.load_embeddings()
         if not self.index:
-            self.build_embeddings()
-            self.create_faiss_index()
-            self.save_embeddings()
+            batch_size = 500
+            chunks = docs
+            print("Total", len(chunks))
+            for i in range(0, len(docs), batch_size):
+                self.docs = chunks[i:i + batch_size]
+                print(f"Processing range {i} to {i + batch_size}")
+                self.build_embeddings()
+                self.create_faiss_index()
+                self.save_embeddings()
 
     def build_embeddings(self):
 #         self.embed_model = SentenceTransformer(self.model_name)
@@ -534,16 +540,17 @@ docs = [
     "<texto>10592908862 - Juntada (DESCARTE)		</texto><classificação> SEM CLASSIFICAÇÃO</classificação>\n",
 ]
 
-# import pandas as pd
-# df = pd.read_excel('data.xlsx')
-# df['text_for_embedding'] = "<texto>" + df['Movimentações'].astype(str) + "</texto> é classificado como <classificação>" + df['CLASSIFICAÇÃO'].astype(str) + "</classificação>"
+import pandas as pd
+df = pd.read_excel('data.xlsx')
+df['text_for_embedding'] = "<texto>" + df['Movimentações'].astype(str) + "</texto> é classificado como <classificação>" + df['CLASSIFICAÇÃO'].astype(str) + "</classificação>"
 
 if __name__ == "__main__":
-    from types import SimpleNamespace
-    chatbot = SimpleNamespace(rag=None)
-#     chatbot = QwenChatbot()
-#     chatbot.rag = QwenRag(docs=df['text_for_embedding'].head(100).to_list())
-    chatbot.rag = QwenRag(docs=docs)
+#     from types import SimpleNamespace
+#     chatbot = SimpleNamespace(rag=None)
+    chatbot = QwenChatbot()
+#     chatbot.rag = QwenRag(docs=df['text_for_embedding'].head(1000).to_list())
+    chatbot.rag = QwenRag(docs=df['text_for_embedding'].to_list())
+#     chatbot.rag = QwenRag(docs=docs)
     while True:
         prompt = input("Enter your prompt (or 'quit' to exit): ")
         if prompt.lower() == 'quit':
@@ -560,6 +567,10 @@ if __name__ == "__main__":
                 pclass.append(m.group(1))
         if pclass[0] != pclass[1]:
             print("Thinking...")
+            retrieved = chatbot.rag.retrieve(prompt, 10)
+            for i, r in enumerate(retrieved):
+                chatbot.history.append({"role": "system", "content": "<retrieved>"+r+"</retrieved>"})
+            response = chatbot.generate_response(prompt)
         else:
             print(pclass[0])
 #         for i, r in enumerate(retrieved):
