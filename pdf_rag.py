@@ -475,7 +475,7 @@ FORMATO DE SAIDA
 
 Retorne apenas no formato abaixo:
 
-CLASSIFICACAO
+<classificação>[CLASSIFICACAO]</classificação>
 
 --------------------------------------------------
 RESTRICOES
@@ -503,7 +503,7 @@ RESTRICOES
             messages,
             tokenize=False,
             add_generation_prompt=True,
-            enable_thinking=False,
+            enable_thinking=True,
         )
 
         streamer = TextStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
@@ -571,7 +571,7 @@ if __name__ == "__main__":
         prompt = input("Enter your prompt (or 'quit' to exit): ")
         if prompt.lower() == 'quit':
             break
-        retrieved = chatbot.rag.retrieve(prompt)
+        retrieved = chatbot.rag.retrieve(prompt, 5)
         # TODO verificar se cada recuperacao tem uma classificacao diferente
         # e verificar se o prompt é menos de 50% semelhante a recuperacao
         # se for entao usar o llm de raciocionio
@@ -584,26 +584,40 @@ if __name__ == "__main__":
                 pclass.append(m.group(1))
         if pclass[0] != pclass[1]:
             from difflib import SequenceMatcher
-            similarity = SequenceMatcher(None, retrieved[0], prompt).ratio()
-            print(f"Similarity: {similarity:.2f}") # Output: 0.92
-            similarity = SequenceMatcher(None, retrieved[1], prompt).ratio()
-            print(f"Similarity: {similarity:.2f}") # Output: 0.92
+            t = re.search(r"<texto>(.*?)</texto>", retrieved[0], re.IGNORECASE | re.DOTALL).group(1)
+            st1 = SequenceMatcher(None, t, prompt).ratio()
+            print(f"Similarity: {st1:.2f}") # Output: 0.92
+            t = re.search(r"<texto>(.*?)</texto>", retrieved[1], re.IGNORECASE | re.DOTALL).group(1)
+            st2 = SequenceMatcher(None, t, prompt).ratio()
+            print(f"Similarity: {st2:.2f}") # Output: 0.92
 #             classify_input(prompt, pclass)
-            retrieved = chatbot.rag.retrieve(prompt, 10)
-            for r in retrieved:
-                print("rag2:", r)
-            find_most_similar(prompt, pclass)
+            if st1 > 0.5 and st1 > st2:
+                print(pclass[0])
+            elif st2 > 0.5 and st2 > st1:
+                print(pclass[1])
+            elif st1 < 0.5 and st2 < 0.5:
+#                 retrieved = chatbot.rag.retrieve(prompt, 10)
+#                 for r in retrieved:
+#                     print("rag2:", r)
+#                 find_most_similar(prompt, pclass)
 
 #             print("Thinking...")
-#             retrieved = chatbot.rag.retrieve(prompt, 10)
-#             for i, r in enumerate(retrieved):
-#                 chatbot.history.append({"role": "system", "content": "<retrieved>"+r+"</retrieved>"})
-#             response = chatbot.generate_response(prompt)
+                retrieved = chatbot.rag.retrieve(prompt, 10)
+                for i, r in enumerate(retrieved):
+                    chatbot.history.append({"role": "system", "content": "<retrieved>"+r+"</retrieved>"})
+                response = chatbot.generate_response(prompt)
         else:
             print(pclass[0])
             from difflib import SequenceMatcher
-            similarity = SequenceMatcher(None, retrieved[0], prompt).ratio()
-            print(f"Similarity: {similarity:.2f}") # Output: 0.92
+            t = re.search(r"<texto>(.*?)</texto>", retrieved[0], re.IGNORECASE | re.DOTALL).group(1)
+            similarity = SequenceMatcher(None, t, prompt).ratio()
+            print(f"Similarity: {similarity:.2f}")
+            t = re.search(r"<texto>(.*?)</texto>", retrieved[1], re.IGNORECASE | re.DOTALL).group(1)
+            similarity = SequenceMatcher(None, t, prompt).ratio()
+            print(f"Similarity: {similarity:.2f}")
+            t = re.search(r"<texto>(.*?)</texto>", retrieved[2], re.IGNORECASE | re.DOTALL).group(1)
+            similarity = SequenceMatcher(None, t, prompt).ratio()
+            print(f"Similarity: {similarity:.2f}")
 #         for i, r in enumerate(retrieved):
 #             chatbot.history.append({"role": "system", "content": "<contexto>"+r+"</contexto>"})
 #         response = chatbot.generate_response(prompt)
