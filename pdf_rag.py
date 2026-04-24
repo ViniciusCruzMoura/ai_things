@@ -7,6 +7,7 @@ from sentence_transformers import SentenceTransformer
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer
 import re
 import sqlite3
+from difflib import SequenceMatcher
 
 def find_most_similar(input_text, text_list):
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -516,6 +517,53 @@ RESTRICOES
         self.history.append({"role": "assistant", "content": response})
 
         return response
+
+class ClassifyAgent:
+    def __init__(
+            self, 
+            model_name="Qwen/Qwen3-Embedding-0.6B",
+            excel_path=None,
+        ):
+        self.model_name=None
+        self.excel_path=None
+        self.tools=None
+        self.chatbot = QwenChatbot()
+        self.chatbot.rag = QwenRag()
+    def run(self, prompt):
+        retrieved = self.chatbot.rag.retrieve(prompt)
+        pclass = []
+        for r in retrieved:
+            m = re.search(r"<classificação>(.*?)</classificação>", r, re.IGNORECASE | re.DOTALL)
+            if m:
+                pclass.append(m.group(1))
+        if pclass[0] != pclass[1]:
+            t = re.search(r"<texto>(.*?)</texto>", retrieved[0], re.IGNORECASE | re.DOTALL).group(1)
+            st1 = SequenceMatcher(None, t, prompt).ratio()
+            t = re.search(r"<texto>(.*?)</texto>", retrieved[1], re.IGNORECASE | re.DOTALL).group(1)
+            st2 = SequenceMatcher(None, t, prompt).ratio()
+            if st1 > 0.5 and st1 > st2:
+                return pclass[0]
+            elif st2 > 0.5 and st2 > st1:
+                return pclass[1]
+            elif st1 < 0.5 and st2 < 0.5:
+                clean_history = self.chatbot.history.copy()
+                retrieved = self.chatbot.rag.retrieve(prompt, 10)
+                for i, r in enumerate(retrieved):
+                    self.chatbot.history.append({"role": "system", "content": "<retrieved>"+r+"</retrieved>"})
+                response = self.chatbot.generate_response(prompt)
+                self.chatbot.history = clean_history
+                try:
+                    return re.search(r"<classificação>(.*?)</classificação>", response, re.IGNORECASE | re.DOTALL).group(1)
+                except:
+                    return "-"
+            else:
+                return "-"
+        else:
+            t = re.search(r"<texto>(.*?)</texto>", retrieved[0], re.IGNORECASE | re.DOTALL).group(1)
+            similarity = SequenceMatcher(None, t, prompt).ratio()
+            print(f"Similarity: {similarity:.2f}")
+            return pclass[0]
+        return "<texto>Exemplo</texto> <classificação>EXEMPLO</classificação>"
 
 # def extract_text_pages(pdf_path):
 #     import pdfplumber
