@@ -510,7 +510,8 @@ RESTRICOES
         streamer = TextStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
 
         inputs = self.tokenizer(text, return_tensors="pt")
-        response_ids = self.model.generate(**inputs, top_p=0.3, top_k=1, temperature=0.1, use_cache=True, do_sample=False, streamer=streamer, max_new_tokens=32768)[0][len(inputs.input_ids[0]):].tolist()
+#         response_ids = self.model.generate(**inputs, top_p=0.3, top_k=1, temperature=0.1, use_cache=True, do_sample=False, streamer=streamer, max_new_tokens=32768)[0][len(inputs.input_ids[0]):].tolist()
+        response_ids = self.model.generate(**inputs, top_p=0.95, top_k=20, min_p=0.0, temperature=0.6, use_cache=True, do_sample=True, streamer=streamer, max_new_tokens=4000)[0][len(inputs.input_ids[0]):].tolist()
         response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
 
         self.history.append({"role": "user", "content": user_input})
@@ -546,6 +547,7 @@ class ClassifyAgent:
             elif st2 > 0.5 and st2 > st1:
                 return pclass[1]
             elif st1 < 0.5 and st2 < 0.5:
+                return "-"
                 clean_history = self.chatbot.history.copy()
                 retrieved = self.chatbot.rag.retrieve(prompt, 10)
                 for i, r in enumerate(retrieved):
